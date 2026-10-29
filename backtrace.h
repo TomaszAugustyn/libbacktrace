@@ -213,6 +213,39 @@ extern int backtrace_syminfo (struct backtrace_state *state, uintptr_t addr,
 			      backtrace_error_callback error_callback,
 			      void *data);
 
+/* Add the module (executable or shared library) in the file FILENAME
+   to STATE, so that backtrace_pcinfo and backtrace_syminfo can
+   describe the addresses inside it.  BASE_ADDRESS is the load bias
+   the dynamic loader applied to the file, the value dl_iterate_phdr
+   reports as dlpi_addr and the l_addr field of its struct link_map
+   holds: 0 for an executable linked at a fixed address and, for a
+   position-independent executable or a shared library linked at
+   address 0 (the usual case), the address of its first mapping.
+   FILENAME must point to a permanent buffer.
+
+   This is for programs that manage the set of modules themselves: a
+   plugin host that dlopen()s libraries after the first lookup, a
+   program whose executable file libbacktrace cannot find, or one that
+   wants a module described without the discovery of every other
+   loaded module that the first lookup performs.  If a module is added
+   before the first lookup, the state never performs that discovery,
+   and only the modules added are known to it; a module added after
+   the first lookup joins those the discovery found.  A module cannot
+   be removed: if it is unloaded and another one is loaded at the same
+   addresses, lookups of those addresses still find the first one.
+   Adding the same module twice is harmless but wastes memory.
+
+   This returns 1 on success, 0 on failure; errors found while opening
+   or reading the file are reported through ERROR_CALLBACK.  It is
+   only supported for ELF, and not with FDPIC; elsewhere it calls
+   ERROR_CALLBACK and returns 0.  */
+
+extern int backtrace_add_module (struct backtrace_state *state,
+				 const char *filename,
+				 uintptr_t base_address,
+				 backtrace_error_callback error_callback,
+				 void *data);
+
 /* The type of the value that the DATA argument passed to
    backtrace_full_callback or backtrace_syminfo_callback points to if
    the MOREDATA flag is set in the call to backtrace_create_state.

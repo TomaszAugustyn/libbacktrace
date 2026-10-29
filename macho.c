@@ -1371,3 +1371,15 @@ backtrace_initialize (struct backtrace_state *state, const char *filename,
 }
 
 #endif /* !defined (HAVE_MACH_O_DYLD_H) */
+
+/* backtrace_add_module is only implemented for ELF.  */
+
+int
+backtrace_add_module (struct backtrace_state *state ATTRIBUTE_UNUSED,
+		      const char *filename ATTRIBUTE_UNUSED,
+		      uintptr_t base_address ATTRIBUTE_UNUSED,
+		      backtrace_error_callback error_callback, void *data)
+{
+  error_callback (data, "backtrace_add_module is only supported for ELF", 0);
+  return 0;
+}

@@ -7568,3 +7568,94 @@ backtrace_initialize (struct backtrace_state *state, const char *filename,
 
   return 1;
 }
+
+#if libbacktrace_using_fdpic ()
+
+/* The segments of an FDPIC module are relocated separately, which
+   the single base address of backtrace_add_module cannot describe.  */
+
+int
+backtrace_add_module (struct backtrace_state *state ATTRIBUTE_UNUSED,
+		      const char *filename ATTRIBUTE_UNUSED,
+		      uintptr_t base_address ATTRIBUTE_UNUSED,
+		      backtrace_error_callback error_callback, void *data)
+{
+  error_callback (data, "backtrace_add_module is not supported with FDPIC", 0);
+  return 0;
+}
+
+#else /* !libbacktrace_using_fdpic () */
+
+/* Add one module to STATE by hand.  See backtrace.h.  */
+
+int
+backtrace_add_module (struct backtrace_state *state, const char *filename,
+		      uintptr_t base_address,
+		      backtrace_error_callback error_callback, void *data)
+{
+  int descriptor;
+  int does_not_exist;
+  struct libbacktrace_base_address base;
+  fileline fileline_fn;
+  int found_sym;
+  int found_dwarf;
+  int ret;
+
+  /* With a module added by hand, fileline_initialize must never run
+     its executable-based discovery: install the "nothing known"
+     handlers before the first module, so that lookups of addresses in
+     unknown modules report no information instead of starting it.  */
+  if (!state->threaded)
+    {
+      if (state->fileline_fn == NULL)
+	state->fileline_fn = elf_nodebug;
+      if (state->syminfo_fn == NULL)
+	state->syminfo_fn = elf_nosyms;
+    }
+  else
+    {
+      (void) __sync_bool_compare_and_swap (&state->fileline_fn, NULL,
+					   elf_nodebug);
+      (void) __sync_bool_compare_and_swap (&state->syminfo_fn, NULL,
+					   elf_nosyms);
+    }
+
+  descriptor = backtrace_open (filename, error_callback, data,
+			       &does_not_exist);
+  if (descriptor < 0)
+    {
+      if (does_not_exist)
+	error_callback (data, filename, ENOENT);
+      return 0;
+    }
+
+  memset (&base, 0, sizeof base);
+  base.m = base_address;
+  fileline_fn = NULL;
+  found_sym = 0;
+  found_dwarf = 0;
+  ret = elf_add (state, filename, descriptor, NULL, 0, base, NULL,
+		 error_callback, data, &fileline_fn, &found_sym,
+		 &found_dwarf, NULL, 0, 0, NULL, 0);
+  if (ret <= 0)
+    return 0;
+
+  if (!state->threaded)
+    {
+      if (found_sym)
+	state->syminfo_fn = elf_syminfo;
+      if (found_dwarf && fileline_fn != NULL)
+	state->fileline_fn = fileline_fn;
+    }
+  else
+    {
+      if (found_sym)
+	backtrace_atomic_store_pointer (&state->syminfo_fn, elf_syminfo);
+      if (found_dwarf && fileline_fn != NULL)
+	backtrace_atomic_store_pointer (&state->fileline_fn, fileline_fn);
+    }
+
+  return 1;
+}
+
+#endif /* !libbacktrace_using_fdpic () */
