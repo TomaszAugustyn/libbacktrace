@@ -898,7 +898,9 @@ elf_readlink (struct backtrace_state *state, const char *filename,
 #define SYSTEM_BUILD_ID_DIR "/usr/lib/debug/.build-id/"
 
 /* Open a separate debug info file, using the build ID to find it.
-   Returns an open file descriptor, or -1.
+   Returns an open file descriptor, or -1.  On success sets
+   *DEBUGFILE_NAME to the name the file was opened by, allocated with
+   backtrace_alloc; the caller frees it.
 
    The GDB manual says that the only place gdb looks for a debug file
    when the build ID is known is in /usr/lib/debug/.build-id.  */
@@ -907,7 +909,7 @@ static int
 elf_open_debugfile_by_buildid (struct backtrace_state *state,
 			       const char *buildid_data, size_t buildid_size,
 			       backtrace_error_callback error_callback,
-			       void *data)
+			       void *data, char **debugfile_name)
 {
   const char * const prefix = SYSTEM_BUILD_ID_DIR;
   const size_t prefix_len = strlen (prefix);
@@ -946,7 +948,10 @@ elf_open_debugfile_by_buildid (struct backtrace_state *state,
 
   ret = backtrace_open (bd_filename, error_callback, data, &does_not_exist);
 
-  backtrace_free (state, bd_filename, len, error_callback, data);
+  if (ret >= 0)
+    *debugfile_name = bd_filename;
+  else
+    backtrace_free (state, bd_filename, len, error_callback, data);
 
   /* gdb checks that the debuginfo file has the same build ID note.
      That seems kind of pointless to me--why would it have the right
@@ -957,13 +962,16 @@ elf_open_debugfile_by_buildid (struct backtrace_state *state,
 
 /* Try to open a file whose name is PREFIX (length PREFIX_LEN)
    concatenated with PREFIX2 (length PREFIX2_LEN) concatenated with
-   DEBUGLINK_NAME.  Returns an open file descriptor, or -1.  */
+   DEBUGLINK_NAME.  Returns an open file descriptor, or -1.  On
+   success sets *DEBUGFILE_NAME to the name tried, allocated with
+   backtrace_alloc; the caller frees it.  */
 
 static int
 elf_try_debugfile (struct backtrace_state *state, const char *prefix,
 		   size_t prefix_len, const char *prefix2, size_t prefix2_len,
 		   const char *debuglink_name,
-		   backtrace_error_callback error_callback, void *data)
+		   backtrace_error_callback error_callback, void *data,
+		   char **debugfile_name)
 {
   size_t debuglink_len;
   size_t try_len;
@@ -984,20 +992,25 @@ elf_try_debugfile (struct backtrace_state *state, const char *prefix,
 
   ret = backtrace_open (try, error_callback, data, &does_not_exist);
 
-  backtrace_free (state, try, try_len, error_callback, data);
+  if (ret >= 0)
+    *debugfile_name = try;
+  else
+    backtrace_free (state, try, try_len, error_callback, data);
 
   return ret;
 }
 
 /* Find a separate debug info file, using the debuglink section data
-   to find it.  Returns an open file descriptor, or -1.  */
+   to find it.  Returns an open file descriptor, or -1.  On success
+   sets *DEBUGFILE_NAME to the name the file was opened by, allocated
+   with backtrace_alloc; the caller frees it.  */
 
 static int
 elf_find_debugfile_by_debuglink (struct backtrace_state *state,
 				 const char *filename,
 				 const char *debuglink_name,
 				 backtrace_error_callback error_callback,
-				 void *data)
+				 void *data, char **debugfile_name)
 {
   int ret;
   char *alc;
@@ -1006,6 +1019,12 @@ elf_find_debugfile_by_debuglink (struct backtrace_state *state,
   int ddescriptor;
   const char *prefix;
   size_t prefix_len;
+
+  /* Use an absolute name as it stands, as gdb does.  dwz -M writes
+     such names into .gnu_debugaltlink.  */
+  if (debuglink_name[0] == '/')
+    return elf_try_debugfile (state, "", 0, "", 0, debuglink_name,
+			      error_callback, data, debugfile_name);
 
   /* Resolve symlinks in FILENAME.  Since FILENAME is fairly likely to
      be /proc/self/exe, symlinks are common.  We don't try to resolve
@@ -1072,7 +1091,8 @@ elf_find_debugfile_by_debuglink (struct backtrace_state *state,
     }
 
   ddescriptor = elf_try_debugfile (state, prefix, prefix_len, "", 0,
-				   debuglink_name, error_callback, data);
+				   debuglink_name, error_callback, data,
+				   debugfile_name);
   if (ddescriptor >= 0)
     {
       ret = ddescriptor;
@@ -1083,7 +1103,7 @@ elf_find_debugfile_by_debuglink (struct backtrace_state *state,
 
   ddescriptor = elf_try_debugfile (state, prefix, prefix_len, ".debug/",
 				   strlen (".debug/"), debuglink_name,
-				   error_callback, data);
+				   error_callback, data, debugfile_name);
   if (ddescriptor >= 0)
     {
       ret = ddescriptor;
@@ -1095,7 +1115,7 @@ elf_find_debugfile_by_debuglink (struct backtrace_state *state,
   ddescriptor = elf_try_debugfile (state, "/usr/lib/debug/",
 				   strlen ("/usr/lib/debug/"), prefix,
 				   prefix_len, debuglink_name,
-				   error_callback, data);
+				   error_callback, data, debugfile_name);
   if (ddescriptor >= 0)
     ret = ddescriptor;
 
@@ -1106,7 +1126,9 @@ elf_find_debugfile_by_debuglink (struct backtrace_state *state,
 }
 
 /* Open a separate debug info file, using the debuglink section data
-   to find it.  Returns an open file descriptor, or -1.  */
+   to find it.  Returns an open file descriptor, or -1.  On success
+   sets *DEBUGFILE_NAME to the name the file was opened by, allocated
+   with backtrace_alloc; the caller frees it.  */
 
 static int
 elf_open_debugfile_by_debuglink (struct backtrace_state *state,
@@ -1114,13 +1136,14 @@ elf_open_debugfile_by_debuglink (struct backtrace_state *state,
 				 const char *debuglink_name,
 				 uint32_t debuglink_crc,
 				 backtrace_error_callback error_callback,
-				 void *data)
+				 void *data, char **debugfile_name)
 {
   int ddescriptor;
 
   ddescriptor = elf_find_debugfile_by_debuglink (state, filename,
 						 debuglink_name,
-						 error_callback, data);
+						 error_callback, data,
+						 debugfile_name);
   if (ddescriptor < 0)
     return -1;
 
@@ -1132,6 +1155,8 @@ elf_open_debugfile_by_debuglink (struct backtrace_state *state,
       if (got_crc != debuglink_crc)
 	{
 	  backtrace_close (ddescriptor, error_callback, data);
+	  backtrace_free (state, *debugfile_name,
+			  strlen (*debugfile_name) + 1, error_callback, data);
 	  return -1;
 	}
     }
@@ -7051,9 +7076,11 @@ elf_add (struct backtrace_state *state, const char *filename, int descriptor,
   if (buildid_data != NULL)
     {
       int d;
+      char *debugfile_name;
 
       d = elf_open_debugfile_by_buildid (state, buildid_data, buildid_size,
-					 error_callback, data);
+					 error_callback, data,
+					 &debugfile_name);
       if (d >= 0)
 	{
 	  int ret;
@@ -7063,9 +7090,11 @@ elf_add (struct backtrace_state *state, const char *filename, int descriptor,
 	    elf_release_view (state, &debuglink_view, error_callback, data);
 	  if (debugaltlink_view_valid)
 	    elf_release_view (state, &debugaltlink_view, error_callback, data);
-	  ret = elf_add (state, "", d, NULL, 0, base_address, opd,
+	  ret = elf_add (state, debugfile_name, d, NULL, 0, base_address, opd,
 			 error_callback, data, fileline_fn, found_sym,
 			 found_dwarf, NULL, 0, 1, NULL, 0);
+	  backtrace_free (state, debugfile_name, strlen (debugfile_name) + 1,
+			  error_callback, data);
 	  if (ret < 0)
 	    backtrace_close (d, error_callback, data);
 	  else if (descriptor >= 0)
@@ -7083,10 +7112,11 @@ elf_add (struct backtrace_state *state, const char *filename, int descriptor,
   if (debuglink_name != NULL)
     {
       int d;
+      char *debugfile_name;
 
       d = elf_open_debugfile_by_debuglink (state, filename, debuglink_name,
 					   debuglink_crc, error_callback,
-					   data);
+					   data, &debugfile_name);
       if (d >= 0)
 	{
 	  int ret;
@@ -7094,9 +7124,11 @@ elf_add (struct backtrace_state *state, const char *filename, int descriptor,
 	  elf_release_view (state, &debuglink_view, error_callback, data);
 	  if (debugaltlink_view_valid)
 	    elf_release_view (state, &debugaltlink_view, error_callback, data);
-	  ret = elf_add (state, "", d, NULL, 0, base_address, opd,
+	  ret = elf_add (state, debugfile_name, d, NULL, 0, base_address, opd,
 			 error_callback, data, fileline_fn, found_sym,
 			 found_dwarf, NULL, 0, 1, NULL, 0);
+	  backtrace_free (state, debugfile_name, strlen (debugfile_name) + 1,
+			  error_callback, data);
 	  if (ret < 0)
 	    backtrace_close (d, error_callback, data);
 	  else if (descriptor >= 0)
@@ -7115,17 +7147,21 @@ elf_add (struct backtrace_state *state, const char *filename, int descriptor,
   if (debugaltlink_name != NULL)
     {
       int d;
+      char *altfile_name;
 
       d = elf_open_debugfile_by_debuglink (state, filename, debugaltlink_name,
-					   0, error_callback, data);
+					   0, error_callback, data,
+					   &altfile_name);
       if (d >= 0)
 	{
 	  int ret;
 
-	  ret = elf_add (state, filename, d, NULL, 0, base_address, opd,
+	  ret = elf_add (state, altfile_name, d, NULL, 0, base_address, opd,
 			 error_callback, data, fileline_fn, found_sym,
 			 found_dwarf, &fileline_altlink, 0, 1,
 			 debugaltlink_buildid_data, debugaltlink_buildid_size);
+	  backtrace_free (state, altfile_name, strlen (altfile_name) + 1,
+			  error_callback, data);
 	  elf_release_view (state, &debugaltlink_view, error_callback, data);
 	  debugaltlink_view_valid = 0;
 	  if (ret < 0)

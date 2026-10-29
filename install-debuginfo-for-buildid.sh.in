@@ -63,3 +63,14 @@ dst=$dir/$remainder.debug
 $mkdir_p $dir
 
 $objcopy --only-keep-debug $src $dst
+
+# A test program that dwz has processed names its alt file by a bare
+# file name, which gdb and libbacktrace look up in the directory of the
+# file that carries the name.  Copy the alt file next to the installed
+# debug file, so that the name still resolves from there.
+altlink=$(LANG=C $readelf -p .gnu_debugaltlink $src 2>/dev/null \
+	      | $sed -n 's/^ *\[ *0\]  *//p')
+case "$altlink" in
+  "" | */*) ;;
+  *) cp $(dirname $src)/$altlink $dir/$altlink ;;
+esac
